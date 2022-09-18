@@ -35,6 +35,11 @@ export type CalendarWeek = [
   CalendarDate
 ];
 
+export type CalendarDisabledRange = [
+  startDateInclusive?: CalendarDate,
+  endDateExclusive?: CalendarDate
+];
+
 export interface CalendarMethods {
   /**
    * Select specific date on calendar.
@@ -43,9 +48,15 @@ export interface CalendarMethods {
   select: (date: CalendarDate) => void;
   /**
    * Deselect specific date on calendar.
-   * If it is not selected function call is no-op.
+   *
+   * If `date` is not selected function call is no-op.
+   *
+   * If `allowDeselectLastSelectedDate` is `false` and `date` is only selected date call is no-op.
    */
-  deselect: (date: CalendarDate) => void;
+  deselect: (
+    date: CalendarDate,
+    allowDeselectLastSelectedDate?: boolean | undefined
+  ) => void;
 }
 
 export type CalendarCurrentAnimatedMonthFromCommonEra =

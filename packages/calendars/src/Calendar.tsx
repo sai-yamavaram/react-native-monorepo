@@ -1,5 +1,12 @@
-import { forwardRef, useCallback, useMemo, useRef, useState } from 'react';
-import { StyleSheet, FlatListProps } from 'react-native';
+import {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState
+} from 'react';
+import { StyleSheet } from 'react-native';
 import Animated, {
   runOnJS,
   useDerivedValue,
@@ -11,10 +18,7 @@ import {
 } from 'react-native-gesture-handler';
 import { DateTime } from 'luxon';
 import { CalendarProvider } from './contexts/external';
-import {
-  CalendarInternalContextInterface,
-  CalendarInternalProvider
-} from './contexts/internal';
+import { CalendarInternalProvider } from './contexts/internal';
 import { CalendarAnimatedProvider } from './contexts/animated';
 import { CalendarDaysOfWeekHeader } from './components/CalendarDaysOfWeekHeader';
 import { calendarYearAndMonthToMonths } from './helpers';
@@ -24,6 +28,12 @@ import { CalendarHeaderMonth } from './components/header/CalendarHeaderMonth';
 import { CalendarHeaderYear } from './components/header/CalendarHeaderYear';
 import { CalendarHeaderDecorator } from './components/header/CalendarHeaderDecorator';
 import { CalendarDayKind } from './CalendarDay';
+import { CalendarThemeProvider } from './contexts/theme';
+import { useCalendarInterval, useSelectedDates } from './hooks';
+import { CalendarThemeLight } from './themes';
+import type { ForwardedRef } from 'react';
+import type { FlatListProps } from 'react-native';
+import type { FlatList as RNGestureHandlerFlatList } from 'react-native-gesture-handler';
 import type { CalendarAnimatedContextInterface } from './contexts/animated';
 import type {
   CalendarCurrentAnimatedMonthFromCommonEra,
@@ -36,11 +46,10 @@ import type {
   ViewStyleProp,
   CalendarSelectionMode,
   CalendarTheme,
-  CalendarPerformanceProps
+  CalendarPerformanceProps,
+  CalendarDisabledRange
 } from './types';
-import { CalendarThemeProvider } from './contexts/theme';
-import { useCalendarInterval, useSelectedDates } from './hooks';
-import { CalendarThemeLight } from './themes';
+import type { CalendarInternalContextInterface } from './contexts/internal';
 
 // @ts-expect-error
 const AnimatedTapGestureHandler: typeof TapGestureHandler =
@@ -63,6 +72,30 @@ export type CalendarProps = {
   initialCalendarYearAndMonth?: CalendarYearAndMonth;
 
   /**
+   * Initial selected dates.
+   *
+   * If `selectionMode` is `singleDay` only array with one date is allowed.
+   *
+   * If any date from this range falls into `disabledDateRanges` ranges,
+   * it **becomes disabled** and **will not be selected**.
+   * @defaultValue `[]`
+   */
+  initialSelectedDates?: CalendarDate[];
+
+  /**
+   * Ranges of dates which will be shown as **disabled**.
+   * They appear with greyed color, unresponsive (can't be selected or unselected).
+   *
+   * If `startDateInclusive` is set as `undefined` all dates up until `endDateExclusive` **become disabled**.
+   *
+   * If `endDateExclusive` is set as `undefined` all dates after `startDateInclusive` (including this date) **become disabled**.
+   *
+   * If both `startDateInclusive` and `endDateExclusive` are set as `undefined` **all dates become disabled**.
+   * @defaultValue `[]`
+   */
+  disabledDateRanges?: CalendarDisabledRange[];
+
+  /**
    * Amount of months before initial year and month,
    * which will be shown in a calendar.
    * @defaultValue `50`
@@ -83,6 +116,13 @@ export type CalendarProps = {
   selectionMode?: CalendarSelectionMode;
 
   /**
+   * If calendar has only one (last) selected date,
+   * can we unselect it by tapping on this date?
+   * @defaultValue `true`
+   */
+  allowDeselectLastSelectedDate?: boolean;
+
+  /**
    * How much months can be scrolled over.
    * @defaultValue `multipleMonths`
    */
@@ -96,9 +136,13 @@ export type CalendarProps = {
 
   /**
    * Active (current) calendar day.
-   * If provided, will be highlighted in active color.
+   * If provided, it will be highlighted in active color.
+   *
+   * If date falls into `disabledDateRanges` ranges,
+   * it **becomes disabled** and **will not be active**.
    */
   activeCalendarDay?: CalendarDate;
+
   /**
    * Theme object to customize calendar appearance
    */
@@ -108,6 +152,11 @@ export type CalendarProps = {
    * Properties to customize performance characteristics
    */
   performanceProps?: CalendarPerformanceProps;
+
+  /**
+   * Reference to internal animated FlatList
+   */
+  animatedFlatListRef?: ForwardedRef<RNGestureHandlerFlatList<any>>;
 
   /**
    * Callback is called when state of a day changes,
@@ -125,15 +174,19 @@ export const Calendar = forwardRef<CalendarMethods, CalendarProps>(
   (
     {
       initialCalendarYearAndMonth: _initialCalendarYearAndMonth,
+      initialSelectedDates = [],
+      disabledDateRanges = [],
       monthsBefore = 50,
       monthsAfter = 50,
       selectionMode = 'singleDay',
       scrollMode = 'oneMonth',
       scrollModeDeceleration = 'normal',
       activeCalendarDay: _activeCalendarDay,
+      allowDeselectLastSelectedDate = true,
       theme = CalendarThemeLight,
       performanceProps,
       style: _containerStyle,
+      animatedFlatListRef,
       onDayStateChange
     }: CalendarProps,
     ref
@@ -242,25 +295,38 @@ export const Calendar = forwardRef<CalendarMethods, CalendarProps>(
       ]
     );
 
-    const [selectedDates, selectDate, deselectDate] =
-      useSelectedDates(selectionMode);
+    const [selectedDates, isLastSelectedDate, selectDate, deselectDate] =
+      useSelectedDates(selectionMode, initialSelectedDates);
 
     const onCalendarDayStateChange = useCallback(
       (day: CalendarDate, calendarKind: CalendarDayKind) => {
         if (calendarKind === CalendarDayKind.SELECTED) {
           selectDate(day);
+          onDayStateChange?.(day, calendarKind);
         } else if (calendarKind === CalendarDayKind.DEFAULT) {
-          deselectDate(day);
+          deselectDate(day, allowDeselectLastSelectedDate);
+          if (allowDeselectLastSelectedDate || !isLastSelectedDate) {
+            onDayStateChange?.(day, calendarKind);
+          }
         }
-        onDayStateChange?.(day, calendarKind);
       },
-      [selectDate, deselectDate, onDayStateChange]
+      [
+        allowDeselectLastSelectedDate,
+        isLastSelectedDate,
+        selectDate,
+        deselectDate,
+        onDayStateChange
+      ]
     );
 
-    // useImperativeHandle(ref, () => ({
-    //   select: selectDate,
-    //   deselect: deselectDate
-    // }));
+    useImperativeHandle(
+      ref,
+      () => ({
+        select: selectDate,
+        deselect: deselectDate
+      }),
+      [selectDate, deselectDate]
+    );
 
     const contentWrapperRef = useRef<typeof AnimatedTapGestureHandler>(null);
 
@@ -279,6 +345,8 @@ export const Calendar = forwardRef<CalendarMethods, CalendarProps>(
         selectDate: selectDate,
         deselectDate: deselectDate,
         selectedDates: selectedDates,
+        disabledDateRanges: disabledDateRanges,
+        allowDeselectLastSelectedDate: allowDeselectLastSelectedDate,
         monthsBefore,
         monthsAfter,
         startCalendarYearAndMonth: startCalendarYearAndMonth,
@@ -294,6 +362,8 @@ export const Calendar = forwardRef<CalendarMethods, CalendarProps>(
         selectDate,
         deselectDate,
         selectedDates,
+        disabledDateRanges,
+        allowDeselectLastSelectedDate,
         monthsBefore,
         monthsAfter,
         startCalendarYearAndMonth,
@@ -330,7 +400,7 @@ export const Calendar = forwardRef<CalendarMethods, CalendarProps>(
 
                 <CalendarDaysOfWeekHeader />
                 <CalendarScrollableMonths
-                  ref={ref}
+                  ref={animatedFlatListRef}
                   scrollMode={scrollMode}
                   scrollModeDeceleration={scrollModeDeceleration}
                   activeCalendarDay={activeCalendarDay}

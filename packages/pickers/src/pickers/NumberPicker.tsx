@@ -3,18 +3,20 @@ import Animated, {
   useAnimatedReaction,
   useSharedValue
 } from 'react-native-reanimated';
-import {
-  ItemPicker,
+import { assert } from '@breeffy/invariants';
+import { ItemPicker } from './ItemPicker';
+import { useItemSize } from '../hooks/useItemSize';
+import { cardReducer } from './utils';
+import { usePickerLayout } from '../hooks/usePickerLayout';
+import { interpolateWithRound } from '../worklets';
+import { useCallback, useMemo } from 'react';
+import type {
   ItemPickerProps,
   ItemPickerScrollComponentKind
 } from './ItemPicker';
-import { useItemSize } from '../hooks/useItemSize';
-import { Accumulator, cardReducer } from './utils';
-import { usePickerLayout } from '../hooks/usePickerLayout';
-import { interpolateWithRound } from '../worklets';
+import type { Accumulator } from './utils';
 import type { InterpolateConfig } from '../utils';
 import type { PickerItemProps } from '../components/itemPicker/types';
-import { useCallback, useMemo } from 'react';
 
 export interface ItemProps<T> extends PickerItemProps<T> {
   translates: number[];
@@ -42,24 +44,30 @@ export type NumberPickerProps<T> = Omit<
 
   /**
    * Returns ledge (offset) of item from previous one.
-   * 
-   * Initially item is positioned so that right edge of item 
+   *
+   * Initially item is positioned so that right edge of item
    * is the same as right edge of previous item.
-   * 
+   *
    * So, if you want to layout item right next to adjacent one,
-   * use this function: 
+   * use this function:
    * `(itemScale: number, itemSize: number) => itemScale * itemSize`
 
-   * If you want to make item ledge from previous item by some 
+   * If you want to make item ledge from previous item by some
    * constant offset use this function:
    * `(itemScale: number, itemSize: number) => 20`
    */
   getItemOffset?: (itemScale: number, itemSize: number) => number;
   renderItem: (props: ItemProps<T>) => JSX.Element;
+
+  /**
+   * If element of items array has type **string**
+   * this function is called to convert to number
+   */
+  convertItemToNumber?: (item: T & string) => number;
   currentValue: Animated.SharedValue<number>;
 };
 
-export const NumberPicker = <T extends number = number>(
+export const NumberPicker = <T extends number | string = number | string>(
   props: NumberPickerProps<T>
 ) => {
   const {
@@ -76,8 +84,31 @@ export const NumberPicker = <T extends number = number>(
     getItemOffset,
     initialIndex = 0,
     currentIndex: _currentIndex,
-    currentValue: _currentValue
+    currentValue: _currentValue,
+    convertItemToNumber
   } = props;
+
+  const numberItems = useMemo(() => {
+    return items.map(it => {
+      if (typeof it === 'number') {
+        return it;
+      } else if (typeof it === 'string') {
+        assert(
+          convertItemToNumber !== undefined,
+          'if any element of items array is string, function convertItemToNumber is required'
+        );
+        return convertItemToNumber(it);
+      }
+      assert(
+        false,
+        `invalid type ${typeof it} of some items array element, allowed only number or string types`
+      );
+    });
+  }, [items, convertItemToNumber]);
+
+  const itemPickerProps = useMemo(() => {
+    return { ...props, convertItemToNumber: undefined };
+  }, [props]);
 
   const currentIndex = useSharedValue<number>(initialIndex);
 
@@ -86,9 +117,13 @@ export const NumberPicker = <T extends number = number>(
   // }, [items, initialIndex]);
 
   const valueInterpolateConfig = useMemo(() => {
-    const indexes = [...items.keys()];
-    return [indexes, items, Extrapolate.CLAMP] as unknown as InterpolateConfig;
-  }, [items]);
+    const indexes = [...numberItems.keys()];
+    return [
+      indexes,
+      numberItems,
+      Extrapolate.CLAMP
+    ] as unknown as InterpolateConfig;
+  }, [numberItems]);
 
   useAnimatedReaction(
     () => {
@@ -186,7 +221,7 @@ export const NumberPicker = <T extends number = number>(
 
   return (
     <ItemPicker<T>
-      {...props}
+      {...itemPickerProps}
       mode={mode}
       pickerSize={pickerSize}
       separatorSize={separatorSize}
